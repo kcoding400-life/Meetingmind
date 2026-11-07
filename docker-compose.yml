@@ -1,0 +1,88 @@
+# =============================================================================
+# MeetingMind — Docker Compose
+# =============================================================================
+# Three services:
+#   api      — FastAPI backend (port 8000)
+#   frontend — Streamlit frontend (port 8501)
+#   redis    — Job status cache (port 6379, internal only)
+#
+# Usage:
+#   cp .env.example .env   # fill in your secrets
+#   docker-compose up --build
+#
+# Production:
+#   docker-compose -f docker-compose.yml up -d
+# =============================================================================
+
+version: "3.9"
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Redis — job status cache
+  # Not exposed externally; only api communicates with it.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - internal
+
+  # ---------------------------------------------------------------------------
+  # API — FastAPI + Uvicorn
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - internal
+      - external
+
+  # ---------------------------------------------------------------------------
+  # Frontend — Streamlit
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    env_file: .env
+    environment:
+      # Points the frontend at the API container name, not localhost
+      - API_BASE_URL=http://api:8000/api/v1
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - internal
+      - external
+
+networks:
+  internal:
+    driver: bridge
+  external:
+    driver: bridge
